@@ -1,4 +1,3 @@
-# Push/PR to main: fmt + validate + plan. Manual run: apply or destroy.
 name: Terraform CI
 
 on:
