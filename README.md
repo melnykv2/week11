@@ -59,15 +59,9 @@ terraform plan
 
 ## Challenges and solutions
 
-| Challenge | Solution |
-|---|---|
-| **State was lost between runs.** Every GitHub job runs on a new VM, so local state disappeared after apply, and destroy would not know what to delete. | Added an S3 backend (`backend.tf`). Fixed settings are in the file. The bucket comes from the `TF_STATE_BUCKET` variable, because backend blocks can't use Terraform variables. |
-| **`terraform init` did not create the bucket.** The backend is set up before Terraform reads any resources, so the bucket can't be created by the same configuration. | Created the bucket once with the AWS CLI, with versioning on. |
-| **The original code failed `fmt -check`.** `00-params.tf` was misaligned, and fixing it by hand moved the error instead of fixing it. | Ran `terraform fmt -recursive`, which changed whitespace only. |
-| **Plan failed with `The value cannot be empty`.** The log showed `bucket=`, because `TF_STATE_BUCKET` had not been created as a Variable (only the Secrets existed). GitHub replaces a missing variable with an empty string. | Added the repository Variables, then *Re-run failed jobs*. |
-| **Plan and apply run on different VMs**, so they could use different provider versions, and `upload-artifact` skips hidden files such as `.terraform.lock.hcl`. | The lock file is uploaded together with `tfplan` (`include-hidden-files: true`). |
-| **PRs from forks can't read secrets**, so Plan would always fail for them. | Plan is skipped for fork PRs. Only the credential-free checks run. |
-| **"Run workflow" redirected to a 404 page.** | The run had actually started. The Actions page was out of date after the merge, and refreshing it before clicking fixes it. |
+**Challenge:** I expected `terraform init` to create the S3 bucket for the state automatically. It doesn't: the S3 backend requires an existing bucket, and init fails if it is missing. Terraform sets up the backend *before* it reads any resources, so a bucket defined in the same configuration would have to store its own state in itself.
+
+**Solution:** I created the bucket once with the AWS CLI, with versioning turned on, before the first pipeline run (see *One-time setup*, step 2).
 
 ## Test results
 
