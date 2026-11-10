@@ -59,9 +59,9 @@ terraform plan
 
 ## Challenges and solutions
 
-**Challenge:** I expected `terraform init` to create the S3 bucket for the state automatically. It doesn't: the S3 backend requires an existing bucket, and init fails if it is missing. Terraform sets up the backend *before* it reads any resources, so a bucket defined in the same configuration would have to store its own state in itself.
+**Challenge:** The original code has no backend, so Terraform keeps its state in a local `terraform.tfstate` file. In GitHub Actions every job runs on a new runner VM that is deleted when the job ends, so the state file disappears together with it. The next run has no state: it would try to create all resources again (and fail on existing ones), and `destroy` would not know what to delete. The state has to be shared between runners.
 
-**Solution:** I created the bucket once with the AWS CLI, with versioning turned on, before the first pipeline run (see *One-time setup*, step 2).
+**Solution:** I moved the state to a remote S3 backend ([`backend.tf`](./infrastructure/backend.tf)). Every job runs `terraform init` against the same S3 bucket, so plan, apply and destroy always read and write the same state. Native S3 locking (`use_lockfile = true`) prevents two runs from changing it at the same time. The bucket is created once beforehand (see *One-time setup*, step 2), and its name is passed to `init` from the `TF_STATE_BUCKET` variable.
 
 ## Test results
 
