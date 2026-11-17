@@ -80,6 +80,8 @@ jobs:
         run: terraform validate
 
       - name: 'TFLint'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           tflint --init
           tflint
