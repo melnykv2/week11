@@ -6,6 +6,12 @@ variable "vpc_cidr" {
   default = "192.168.0.0/16"
 }
 
+variable "admin_cidr" {
+  type        = string
+  description = "CIDR allowed to connect over SSH"
+  default     = "91.223.227.46/32"
+}
+
 #### HTTP PARAMS
 variable "network_http" {
   type = map(string)

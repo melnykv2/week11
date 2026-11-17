@@ -14,7 +14,7 @@ resource "aws_security_group" "administration" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = [var.admin_cidr]
   }
 
   # Allow icmp
@@ -71,7 +71,7 @@ resource "aws_security_group" "web" {
 # Open database port
 resource "aws_security_group" "db" {
   name        = "db"
-  description = "Allow db incgress trafic"
+  description = "Allow db ingress trafic"
   vpc_id      = aws_vpc.terraform.id
   tags = {
     Name = "db"
@@ -93,4 +93,3 @@ resource "aws_security_group" "db" {
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
-
