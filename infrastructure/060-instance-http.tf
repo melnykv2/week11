@@ -12,6 +12,12 @@ resource "aws_instance" "http" {
   ]
   subnet_id = aws_subnet.http.id
   user_data = file("scripts/first-boot-http.sh")
+  metadata_options {
+    http_tokens = "required"
+  }
+  root_block_device {
+    encrypted = true
+  }
   tags = {
     Name = each.key
   }
@@ -27,4 +33,3 @@ resource "aws_eip" "public_http" {
     Name = "public-http-${each.key}"
   }
 }
-

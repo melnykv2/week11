@@ -2,72 +2,48 @@
 
 ![infra instance with multiple network](./img/03-multiple-network.png "infra instance with multiple network")
 
-The Terraform code in [`infrastructure/`](./infrastructure) creates in AWS (`eu-north-1`):
--   1 VPC
--   2 subnets (http, db)
--   2 HTTP instances (Apache, with Elastic IPs)
--   3 DB instances (MariaDB)
+The Terraform code in [`infrastructure/`](./infrastructure) creates a VPC, 2 subnets, 2 HTTP instances (Apache) and 3 DB instances (MariaDB) in AWS (`eu-north-1`). The pipeline is in [`.github/workflows/terraform.yml`](./.github/workflows/terraform.yml).
 
-The whole lifecycle is managed by a GitHub Actions pipeline: [`.github/workflows/terraform.yml`](./.github/workflows/terraform.yml).
+> Task 1 (basic pipeline) is preserved at the [`task-1`](https://github.com/melnykv2/week11/tree/task-1) tag.
 
 ## Implementation
 
 ```
-push / PR to main     ──► Format & Validate ──► Plan
-Run workflow: apply   ──► Format & Validate ──► Plan ──► Apply
-Run workflow: destroy ──► Format & Validate ──► Destroy
+push / PR to main     ──► Init → Format → Validate → TFLint → Trivy → Plan
+Run workflow: apply   ──► (same steps) → Apply → Terratest
+Run workflow: destroy ──► Init → Destroy
 ```
 
-| Job | What it does |
-|---|---|
-| **Format & Validate** | `terraform fmt -check`, `terraform init -backend=false`, `terraform validate`. Uses no AWS credentials. |
-| **Plan** | `terraform plan -out=tfplan`. Shows the plan on the run's Summary page and uploads `tfplan` and `.terraform.lock.hcl` as an artifact. |
-| **Apply (manual)** | Downloads the saved plan and runs `terraform apply tfplan`, so exactly the reviewed plan is applied. |
-| **Destroy (manual)** | `terraform destroy -auto-approve`. |
+All checks are steps of one job, so if any step fails, the steps after it are skipped. Pushes and PRs only check and plan; AWS changes only when the workflow is started manually.
 
-Key points:
-- **Automatic runs (push or PR) never change AWS.** Apply and destroy run only when started manually.
-- **Remote state in S3** ([`infrastructure/backend.tf`](./infrastructure/backend.tf)), with native S3 locking. The bucket name is passed at `init` from a GitHub variable.
-- **One run at a time** (`concurrency`), and a running apply is never cancelled.
-- **The Terraform version is pinned** (`1.16.5`). AWS keys are available only to the jobs that need them.
+- **TFLint** checks best practices with the `terraform` and AWS rulesets ([`.tflint.hcl`](./infrastructure/.tflint.hcl)).
+- **Trivy** scans for misconfigurations and hardcoded secrets, and fails on HIGH and CRITICAL findings.
+- **Terratest** ([`test/`](./test)) runs after apply and checks that:
+  - all 5 EC2 instances (2 HTTP, 3 DB) are running
+  - the VPC (`192.168.0.0/16`) and subnets (`192.168.1.0/24`, `192.168.2.0/24`) have the correct CIDRs
+  - the DB instances have no public IP or Elastic IP, so the database is not reachable from the internet
 
 ## How to use
 
-**One-time setup**
-1. Create an IAM user with EC2 and S3 permissions, and an access key for it.
-2. Create the S3 state bucket. It must exist before the first `terraform init`:
-   ```bash
-   aws s3api create-bucket --bucket <bucket> --region eu-north-1 \
-     --create-bucket-configuration LocationConstraint=eu-north-1
-   aws s3api put-bucket-versioning --bucket <bucket> --versioning-configuration Status=Enabled
-   ```
-3. In GitHub, go to *Settings → Secrets and variables → Actions* and add:
-   - **Secrets:** `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-   - **Variables:** `TF_STATE_BUCKET` (the bucket name), `AWS_REGION` (`eu-north-1`)
-
-**Daily use**
-- **Check a change:** open a PR or push to `main`. Format & Validate and Plan run automatically. The plan is on the run's **Summary** page.
-- **Deploy:** *Actions → Terraform CI → Run workflow* → branch `main`, action `apply`.
-- **Delete everything:** *Actions → Terraform CI → Run workflow* → action `destroy`.
-
-**Locally**
-```bash
-cd infrastructure
-terraform init -backend-config="bucket=<bucket>"   # same state as the pipeline
-terraform plan
-```
+1. Create the S3 state bucket (`aws s3api create-bucket ...`) with versioning enabled.
+2. In *Settings → Secrets and variables → Actions*, add the secrets `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, and the variable `TF_STATE_BUCKET`.
+3. Set `admin_cidr` in [`00-params.tf`](./infrastructure/00-params.tf) to the IP you SSH from (`x.x.x.x/32`).
+4. Open a PR to run the checks and the plan. Use *Actions → Terraform CI/CD → Run workflow* with `apply` or `destroy` to deploy or delete.
 
 ## Challenges and solutions
 
-**Challenge:** The original code has no backend, so Terraform keeps its state in a local `terraform.tfstate` file. In GitHub Actions every job runs on a new runner VM that is deleted when the job ends, so the state file disappears together with it. The next run has no state: it would try to create all resources again (and fail on existing ones), and `destroy` would not know what to delete. The state has to be shared between runners.
-
-**Solution:** I moved the state to a remote S3 backend ([`backend.tf`](./infrastructure/backend.tf)). Every job runs `terraform init` against the same S3 bucket, so plan, apply and destroy always read and write the same state. Native S3 locking (`use_lockfile = true`) prevents two runs from changing it at the same time. The bucket is created once beforehand (see *One-time setup*, step 2), and its name is passed to `init` from the `TF_STATE_BUCKET` variable.
+| Challenge | Solution |
+|---|---|
+| Runners are deleted after each job, so local Terraform state was lost | Remote S3 backend with locking ([`backend.tf`](./infrastructure/backend.tf)) |
+| TFLint: no version constraint for the AWS provider | Rule `terraform_required_providers` disabled, to keep the original provider configuration (the provider version stays unpinned) |
+| `tflint --init` failed with `403 API rate limit exceeded` (runners share IPs) | The TFLint step uses the workflow's `GITHUB_TOKEN` |
+| Trivy found 14 HIGH/CRITICAL issues | Fixed in code: IMDSv2 required, encrypted root disks, SSH only from `admin_cidr`. Egress to the internet is accepted in [`.trivyignore`](./.trivyignore), because the instances need it for `apt install` |
 
 ## Test results
 
-| Test | Result |
+| Run | Result |
 |---|---|
-| [PR checks + plan](https://github.com/melnykv2/week11/actions/runs/42813792293) | ✅ `Plan: 18 to add, 0 to change, 0 to destroy` (attempt 2) |
-| [Manual apply](https://github.com/melnykv2/week11/actions/runs/42815517159) | ✅ 5 instances running. Both HTTP instances returned "Apache2 Ubuntu Default Page: It works" |
-| [Manual destroy](https://github.com/melnykv2/week11/actions/runs/42816033088) | ✅ No resources left in AWS. The state contains 0 resources |
-| [Push with a Terraform change](https://github.com/melnykv2/week11/actions/runs/42816756065) | ✅ Checks and plan only. Apply and destroy skipped |
+| [Checks + plan](https://github.com/melnykv2/week11/actions/runs/44191035618) | ✅ TFLint, Trivy and plan passed |
+| [Apply + Terratest](https://github.com/melnykv2/week11/actions/runs/44191409115) | ✅ All 3 Terratest checks passed; both HTTP instances returned "It works" |
+| [Destroy](https://github.com/melnykv2/week11/actions/runs/44192327718) | ✅ No resources left in AWS |
+| [Trivy gate](https://github.com/melnykv2/week11/actions/runs/43447179433) | ❌ Stopped at Trivy, plan skipped (proves the chain stops on failure) |
